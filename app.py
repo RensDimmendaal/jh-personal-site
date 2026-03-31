@@ -1,4 +1,4 @@
-import re, frontmatter, mistletoe as mst
+import json, re, frontmatter, mistletoe as mst
 from collections import Counter
 from datetime import datetime
 from fasthtml.common import *
@@ -65,17 +65,31 @@ def layout(*content, htmx, title=None):
         Footer(Divider(), ftr_content, cls=f'{ctr_cls} px-6 mt-auto mb-6')
     )
 
+def read_nb(path):
+    "Read notebook, return frontmatter Post object (like frontmatter.load for .md files)"
+    cells = json.loads(Path(path).read_text()).get('cells', [])
+    fm_src, md_cells = '', cells
+    if cells and cells[0]['cell_type'] == 'raw':
+        fm_src = ''.join(cells[0]['source'])
+        md_cells = cells[1:]
+    def cell_md(c):
+        src = ''.join(c['source'])
+        if c['cell_type'] == 'code': return f'```python\n{src}\n```'
+        if c['cell_type'] == 'markdown': return src
+    md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
+    return frontmatter.loads(f"{fm_src}\n\n{md}")
+
 class Post:
     def __init__(self, path):
         self.path,self.slug                         = (p := Path(path)),p.stem
-        self.content,self.meta                      = (post := frontmatter.load(path)).content,post.metadata
+        self.content,self.meta                      = (post := (read_nb(path) if p.suffix == '.ipynb' else frontmatter.load(path))).content,post.metadata
         self.title,self.date,self.excerpt,self.tags = self.meta['title'],self.meta['date'],self.meta.get('excerpt',''),L(self.meta.get('tags', []))
         self.datestr                                = self.date.strftime('%d %b %Y')
         self.external_url                           = self.meta.get('external_url')
 
 def get_posts(n=None):
     if not (posts_dir := Path('posts')).exists(): return []
-    posts = posts_dir.ls(file_exts='.md').map(Post).sorted(key=lambda p: p.date, reverse=True)
+    posts = posts_dir.ls(file_exts=['.md', '.ipynb']).map(Post).sorted(key=lambda p: p.date, reverse=True)
     return posts[:n] if n else posts
 
 def tag_pill(tag, selected=None, avail=None, link=False):
@@ -267,8 +281,8 @@ def blog(htmx, tags:str=None):
 
 @rt('/blog/{slug}')
 def blogpost(htmx, slug:str):
-    post_path = Path('posts') / f'{slug}.md'
-    if not post_path.exists(): return layout(H1("Post Not Found", cls="text-4xl font-bold mb-4"), P("Sorry, this blog post doesn't exist."), title="Post Not Found", htmx=htmx)
+    post_path = first(p for ext in ('.md','.ipynb') if (p := Path('posts')/f'{slug}{ext}').exists())
+    if not post_path: return layout(H1("Post Not Found", cls="text-4xl font-bold mb-4"), P("Sorry, this blog post doesn't exist."), title="Post Not Found", htmx=htmx)
     p = Post(post_path)
     if p.external_url: return Response(headers={"HX-Redirect": p.external_url})
     content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
@@ -295,4 +309,4 @@ def rss_feed():
 @rt
 def contact(): return RedirectResponse(f'mailto:{os.environ.get('EMAIL')}', status_code=302)
 
-serve()
+serve(port=8000)
