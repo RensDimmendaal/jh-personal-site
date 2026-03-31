@@ -77,10 +77,11 @@ def read_nb(path):
     def cell_md(c):
         src = ''.join(c['source'])
         if c['cell_type'] == 'code':
-            parts = [f'```python\n{src}\n```']
+            code = f'```python\n{src}\n```'
             if outs := render_outputs(c.get('outputs', [])):
-                parts.append(outs)
-            return '\n\n'.join(parts)
+                out_div = f'<div class="cell-output">{outs}</div>'
+                return f'<div class="cell">\n\n{code}\n\n{out_div}\n\n</div>'
+            return f'<div class="cell">\n\n{code}\n\n</div>'
         if c['cell_type'] == 'raw': return f'```\n{src}\n```'
         if c['cell_type'] == 'markdown': return src
     md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
@@ -132,7 +133,7 @@ def _preferred_msg_out(out, **kwargs):
 def render_output(out):
     def _fmt(text):
         res = ansi2html(str(text))
-        return f"<pre><code>{res}</code></pre>"
+        return f'<pre class="!border-0 !rounded-none !my-0 !p-0"><code>{res}</code></pre>'
     ptyp,d = _preferred_msg_out(out, html1st=True, include_imgs=True)
     d = _join(d)
     if   ptyp=='text/plain': return _fmt(d)
@@ -312,12 +313,18 @@ sidenote_css = Style("""
 }
 """)
 
+cell_css = Style("""
+.cell pre { margin-bottom: 0 !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+.cell-output { border: 1px solid rgb(209 213 219); border-top: 0; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; overflow: hidden; }
+.cell-output pre { border: 0 !important; margin: 0 !important; border-radius: 0 !important; background: var(--muted) !important; }
+""")
+
 def from_md(content, img_dir='/static/images'):
     content, footnotes = extract_footnotes(content)
     mods = {'pre': 'border border-gray-300 rounded-md my-4', 'p': 'text-base leading-relaxed mb-6', 'li': 'text-base leading-relaxed',
             'ul': 'uk-list uk-list-bullet space-y-2 mb-6 ml-6 text-base', 'ol': 'uk-list uk-list-decimal space-y-2 mb-6 ml-6 text-base', 'hr': 'border-t border-border my-8'}
     rendered = render_md(content, class_map_mods=mods, img_dir=img_dir, renderer=partial(ContentRenderer, FootnoteRef, YoutubeEmbed, footnotes=footnotes))
-    return Div(sidenote_css, rendered, cls="w-full")
+    return Div(sidenote_css, cell_css, rendered, cls="w-full")
 
 @rt
 def index(htmx): return layout(intro(), blog_section(), work_section(), title="Jack Hogan - Home", htmx=htmx)
