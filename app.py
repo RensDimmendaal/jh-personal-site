@@ -49,7 +49,7 @@ def hx_link(txt, href, cls="text-primary underline", target="#main-content", **k
 def navbar():
     menu_id,btn_id = f"menu-{unqid()}",f"btn-{unqid()}"
     brand = A(Img(src="/static/images/pixelated_portrait.png", alt="Jack Hogan", cls="w-6 h-6 rounded-full"), Span("Jack Hogan"), href="/", hx_get="/", cls="flex items-center gap-2 text-lg font-bold", **hx_attrs())
-    def navlinks(_=None): return [hx_link(txt, f"/{txt.lower()}", cls="hover:scale-110", _=_) for txt in ["About", "Blog", "Now"]]
+    def navlinks(_=None): return [hx_link(txt, f"/{txt.lower()}", cls="hover:scale-110", _=_) for txt in ["About", "Blog"]]
     hamburger = Button(UkIcon("menu", width=30, height=30), cls="p-0 border-0 shadow-none", _=f"on click toggle .hidden on #{menu_id}", type="button", id=btn_id)
     return Nav(cls="border rounded-lg shadow backdrop-blur-md bg-background/98")(
             Div(brand, Div(*navlinks(), theme_toggle(), cls="hidden md:flex items-center space-x-4 ml-auto"),
@@ -64,7 +64,7 @@ def layout(*content, htmx, title=None):
     return Title(title), Div(cls="flex flex-col min-h-screen")(
         Div(navbar(), cls=f'{ctr_cls} px-4 sticky top-0 z-50 mt-4'),
         main,
-        Footer(Divider(), ftr_content, cls=f'{ctr_cls} px-6 mt-auto mb-6')
+        Footer(Divider(), subscribe_form(), ftr_content, cls=f'{ctr_cls} px-6 mt-auto mb-6 space-y-6')
     )
 
 def read_nb(path):
@@ -223,43 +223,7 @@ def subscribe_form():
         Form(Input(type="email", name="email", placeholder="your@email.com", required=True, cls="flex-1 rounded-l-md"), Button("Subscribe", cls=(ButtonT.primary, "rounded-l-none rounded-r-md")), cls="flex", hx_post="/subscribe", hx_swap="outerHTML"),
         cls="mt-6")
 
-def blog_section():
-    if not (posts := get_posts(3)): return Div()
-    def item(p): return Div(hx_link(p.title, blogpost.to(slug=p.slug), cls="hover:underline font-medium"), Span(p.datestr, cls="text-muted-foreground text-sm whitespace-nowrap"), cls="flex justify-between items-baseline gap-4 py-2 border-b")
-    return Section(Div(H3("Latest Posts", cls="text-2xl font-semibold"), hx_link("View all →", blog), cls="flex justify-between items-baseline mb-4"), *posts.map(item), subscribe_form(), cls="border rounded-lg shadow bg-muted p-4")
 
-def work_item(role, org, years, logo_light, logo_dark=None):
-    logo_dark = logo_dark or logo_light
-    img_cls = "w-6 h-6 rounded object-contain"
-    imgs = (Img(src=f"/static/images/logos/{logo_light}", alt=org, cls=f"{img_cls} dark:hidden"),
-            Img(src=f"/static/images/logos/{logo_dark}", alt=org, cls=f"{img_cls} hidden dark:block"))
-    return Div(Div(*imgs, Span(org, cls="font-medium"), cls="flex items-center gap-2"),
-               Div(Span(role, cls="text-muted-foreground text-sm"),
-                   Span(cls="flex-1 border-b border-dotted"),
-                   Span(years, cls="text-muted-foreground text-sm whitespace-nowrap"), cls="flex items-baseline gap-2"),
-               cls="flex flex-col gap-1 py-2")
-
-def work_section():
-    roles = [("Founding AI Research Scientist", "Agemo AI", "2024–2025", "codewords_dark.png", "codewords_light.png"),
-             ("Co-founder and CEO", "Shoji", "2020–2022", "shoji_dark.png", "shoji_light.png"),
-             ("PhD Statistical Machine Learning", "Imperial College London", "2017–2023", "imperial.png")]
-    return Section(
-        H3("Work", cls="text-2xl font-semibold mb-4"),
-        *[work_item(*r) for r in roles],
-        P("Check out my ", hx_link("About", about), " page or my ", A("CV", href="/static/CV_Jack_Hogan.pdf", cls="text-primary underline", target="_blank"), " for more details.", cls="text-sm text-muted-foreground mt-4")
-    )
-
-def intro():
-    return Article(
-        H3("Welcome", cls="text-2xl font-semibold mb-4"),
-        Div(cls="text-base text-muted-foreground leading-relaxed space-y-4")(
-            P("I'm an AI research scientist based in London, UK."),
-            P("This website is both an excuse to teach myself web development and part of an effort to write more, as a way of solidifying and sharing my thoughts about the topics that interest me. It will most likely cover machine learning, software engineering, startups and entrepreneurship; we'll see what else."),
-            P("To learn more about me, check out my ", hx_link("About", about), " page. ",
-            "See my latest blog posts below or find the full list on my ", hx_link("Blog", blog), " page. ",
-            "Or to find out what I'm up to currently, check out my ", hx_link("Now", now), " page."),
-        )
-    )
 
 def span_token(name, pat, attr, prec=5):
     class T(mst.span_token.SpanToken):
@@ -388,7 +352,7 @@ for _d in sorted(Path('posts').iterdir()) if Path('posts').exists() else []:
         else:              app.route(f'/blog/{_slug}{_r.path}', methods=_r.methods)(_r.endpoint)
 
 @rt
-def index(htmx): return layout(intro(), blog_section(), work_section(), title="Jack Hogan - Home", htmx=htmx)
+def index(): return RedirectResponse('/blog', status_code=307)
 
 @rt
 def about(htmx):
@@ -396,15 +360,6 @@ def about(htmx):
     _, body_md = content.split('\n', 1)
     img = Img(src="/static/images/portrait.jpg", alt="Jack Hogan", cls="w-2/5 md:w-1/3 float-left mr-4 md:mr-6 mb-4 rounded-lg")
     return layout(H2("About"), Div(img, from_md(body_md)), title="Jack Hogan - About", htmx=htmx)
-
-@rt
-def now(htmx):
-    post = frontmatter.load('content/now.md')
-    updated = post.metadata.get('updated')
-    updated_str = updated.strftime('%B %d, %Y') if updated else None
-    content = re.sub(r'^#\s+.+\n', '', post.content, count=1)
-    header = Div(H2("Now"), Span(f"Last updated: {updated_str}", cls="text-sm text-muted-foreground") if updated_str else None, cls="flex justify-between items-baseline")
-    return layout(header, from_md(content), title="Jack Hogan - Now", htmx=htmx)
 
 @rt
 def blog(htmx, tags:str=None):
@@ -417,7 +372,7 @@ def blog(htmx, tags:str=None):
     if htmx and htmx.target == "posts-list":
         tag_filt.attrs['hx-swap-oob'] = 'true'
         return posts_div, tag_filt
-    return layout(H2("Blog"), tag_filt, posts_div, subscribe_form(), title="Jack Hogan - Blog", htmx=htmx)
+    return layout(H2("Blog"), tag_filt, posts_div, title="Jack Hogan - Blog", htmx=htmx)
 
 @rt('/blog/{slug}')
 def blogpost(htmx, slug:str):
