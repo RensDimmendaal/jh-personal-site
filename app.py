@@ -85,6 +85,10 @@ def read_nb(path):
             return f'<div class="cell">\n\n{code}\n\n</div>'
         if c['cell_type'] == 'raw': return f'```\n{src}\n```'
         if c['cell_type'] == 'markdown':
+            if atts := c.get('attachments', {}):
+                for fname, mimes in atts.items():
+                    mime, data = next(iter(mimes.items()))
+                    src = src.replace(f'attachment:{fname}', f'data:{mime};base64,{data}')
             if c.get('metadata', {}).get('solveit_ai'):
                 sep = re.split(r'##### 🤖Reply🤖<!--.*?-->\n*', src, maxsplit=1)
                 prompt = sep[0].strip()
@@ -350,12 +354,21 @@ def from_md(content, img_dir='/static/images'):
     rendered = render_md(content, class_map_mods=mods, img_dir=img_dir, renderer=partial(ContentRenderer, FootnoteRef, YoutubeEmbed, footnotes=footnotes))
     return Div(sidenote_css, cell_css, rendered, cls="w-full")
 
+_img_exts = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'}
+
+@rt('/post-files/{path:path}')
+def post_files(path: str):
+    p = Path('posts') / path
+    if not p.suffix.lower() in _img_exts or not p.resolve().is_relative_to(Path('posts').resolve()) or not p.exists():
+        return Response("Not found", status_code=404)
+    return FileResponse(p)
+
 def post_article(p, slug):
     content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
     tags = Div(*p.tags.map(partial(tag_pill, link=True)), cls="flex gap-2 flex-wrap") if p.tags else None
     return Article(H1(p.title, cls="text-3xl font-bold mb-3"),
                    Div(Span(p.date.strftime("%B %d, %Y"), cls="text-muted-foreground text-sm"), tags, cls="flex justify-between items-center mb-8 flex-wrap gap-4"),
-                   from_md(content, img_dir=f'/static/images/posts/{slug}'), cls="mb-8")
+                   from_md(content, img_dir='/post-files'), cls="mb-8")
 
 # Register interactive sub-app routes from posts/<slug>/index.py
 import importlib.util, sys
