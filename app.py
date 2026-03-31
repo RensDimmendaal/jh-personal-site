@@ -83,7 +83,15 @@ def read_nb(path):
                 return f'<div class="cell">\n\n{code}\n\n{out_div}\n\n</div>'
             return f'<div class="cell">\n\n{code}\n\n</div>'
         if c['cell_type'] == 'raw': return f'```\n{src}\n```'
-        if c['cell_type'] == 'markdown': return src
+        if c['cell_type'] == 'markdown':
+            if c.get('metadata', {}).get('solveit_ai'):
+                sep = re.split(r'##### 🤖Reply🤖<!--.*?-->\n*', src, maxsplit=1)
+                prompt = sep[0].strip()
+                if len(sep) > 1 and sep[1].strip():
+                    response = sep[1].strip()
+                    return f'<div class="ai-cell"><div class="ai-prompt"><span class="ai-label">PROMPT</span>\n\n{prompt}\n\n</div><div class="ai-response"><span class="ai-label">AI</span>\n\n{response}\n\n</div></div>'
+                return f'<div class="ai-cell"><div class="ai-prompt"><span class="ai-label">PROMPT</span>\n\n{prompt}\n\n</div></div>'
+            return src
     md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
     return frontmatter.loads(f"{fm_src}\n\n{md}")
 
@@ -321,6 +329,12 @@ cell_css = Style("""
 .ansi-red-fg { color: #e75c58; } .ansi-green-fg { color: #00a250; } .ansi-yellow-fg { color: #ddb62b; }
 .ansi-blue-fg { color: #208ffb; } .ansi-magenta-fg { color: #d160c4; } .ansi-cyan-fg { color: #60c6c8; }
 .ansi-white-fg { color: #c5c1b4; } .ansi-bold { font-weight: bold; }
+.ai-cell { border: 1px solid rgb(209 213 219); border-radius: 0.375rem; overflow: hidden; margin: 1.5rem 0; }
+.ai-prompt { padding: 0.75rem 1rem; }
+.ai-prompt > p:last-child, .ai-response > p:last-child { margin-bottom: 0 !important; }
+.ai-response { padding: 0.75rem 1rem; background: #f0f0f0; border-top: 1px solid rgb(209 213 219); }
+.dark .ai-response { background: #1e2128; }
+.ai-prompt .ai-label, .ai-response .ai-label { float: right; font-size: 0.6rem; font-weight: 600; color: rgb(156 163 175); letter-spacing: 0.05em; margin-left: 0.5rem; }
 """)
 
 def from_md(content, img_dir='/static/images'):
