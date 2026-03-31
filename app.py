@@ -133,7 +133,7 @@ def _preferred_msg_out(out, **kwargs):
 def render_output(out):
     def _fmt(text):
         res = ansi2html(str(text))
-        return f'<pre class="!border-0 !rounded-none !my-0 !p-0"><code>{res}</code></pre>'
+        return f'<pre class="!border-0 !rounded-none !my-0 !p-0"><code class="nohighlight">{res}</code></pre>'
     ptyp,d = _preferred_msg_out(out, html1st=True, include_imgs=True)
     d = _join(d)
     if   ptyp=='text/plain': return _fmt(d)
@@ -316,7 +316,11 @@ sidenote_css = Style("""
 cell_css = Style("""
 .cell pre { margin-bottom: 0 !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; }
 .cell-output { border: 1px solid rgb(209 213 219); border-top: 0; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; overflow: hidden; }
-.cell-output pre { border: 0 !important; margin: 0 !important; border-radius: 0 !important; background: var(--muted) !important; }
+.cell-output pre, .cell-output pre code { border: 0 !important; margin: 0 !important; border-radius: 0 !important; background: #f0f0f0 !important; }
+.dark .cell-output pre, .dark .cell-output pre code { background: #1e2128 !important; }
+.ansi-red-fg { color: #e75c58; } .ansi-green-fg { color: #00a250; } .ansi-yellow-fg { color: #ddb62b; }
+.ansi-blue-fg { color: #208ffb; } .ansi-magenta-fg { color: #d160c4; } .ansi-cyan-fg { color: #60c6c8; }
+.ansi-white-fg { color: #c5c1b4; } .ansi-bold { font-weight: bold; }
 """)
 
 def from_md(content, img_dir='/static/images'):
