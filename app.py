@@ -75,6 +75,7 @@ def read_nb(path):
     def cell_md(c):
         src = ''.join(c['source'])
         if c['cell_type'] == 'code': return f'```python\n{src}\n```'
+        if c['cell_type'] == 'raw': return f'```\n{src}\n```'
         if c['cell_type'] == 'markdown': return src
     md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
     return frontmatter.loads(f"{fm_src}\n\n{md}")
