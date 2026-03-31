@@ -1,5 +1,7 @@
 import json, re, frontmatter, mistletoe as mst
 from collections import Counter
+from fastcore.ansi import ansi2html
+from html import escape
 from datetime import datetime
 from fasthtml.common import *
 from fastlite import *
@@ -74,11 +76,80 @@ def read_nb(path):
         md_cells = cells[1:]
     def cell_md(c):
         src = ''.join(c['source'])
-        if c['cell_type'] == 'code': return f'```python\n{src}\n```'
+        if c['cell_type'] == 'code':
+            parts = [f'```python\n{src}\n```']
+            if outs := render_outputs(c.get('outputs', [])):
+                parts.append(outs)
+            return '\n\n'.join(parts)
         if c['cell_type'] == 'raw': return f'```\n{src}\n```'
         if c['cell_type'] == 'markdown': return src
     md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
     return frontmatter.loads(f"{fm_src}\n\n{md}")
+
+def preferred_out(data, html1st=True, include_imgs=False):
+    preftyps = ('application/javascript', 'text/latex')
+    preftyps = (('text/html', 'text/markdown') if html1st else ('text/markdown', 'text/html')) + preftyps
+    if include_imgs: preftyps += 'image/jpeg','image/png','image/svg+xml'
+    preftyps += ('text/plain',)
+    for mt in preftyps:
+        if (text := data.get(mt)): return mt,text
+    return 'text/plain',''
+
+def _apply_controls(text):
+    r"Apply \r and \b to text, returning processed result"
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if 0<(rpos := line.rfind('\r'))<len(line)-1: lines[i] = line[rpos+1:]
+    text = '\n'.join(lines)
+    while (pos := text.find('\b')) >= 0: text = text[:max(0, pos-1)] + text[pos+1:]
+    return text
+
+def _join(d): return ''.join(d) if isinstance(d, list) else d
+
+def _mk_stream(name, text): return {'output_type': 'stream', 'name': name, 'text': text}
+
+def concat_streams(outputs):
+    "Concatenate stream outputs by name (stdout/stderr), preserving execute_result at end"
+    streams, res, execute_results = {}, [], []
+    for out in outputs:
+        if out['output_type'] == 'stream':
+            name, text = out['name'], _join(out['text'])
+            streams[name] = _apply_controls(streams.get(name, '') + text)
+        elif out['output_type'] in ('error','execute_result'): execute_results.append(out)
+        else: res.append(out)
+    if 'stdout' in streams: res.append(_mk_stream('stdout', streams['stdout']))
+    if 'stderr' in streams: res.append(_mk_stream('stderr', streams['stderr']))
+    res.extend(execute_results)
+    return res
+
+def _preferred_msg_out(out, **kwargs):
+    typ = out['output_type']
+    if typ == 'stream': return 'text/plain', _join(out.get('text', ""))
+    elif typ == 'error': return 'text/plain', '\n'.join(out.get('traceback', []))
+    elif typ in ('execute_result', 'display_data'): return preferred_out(out.get('data', {}), **kwargs)
+    return 'text/plain',f'Error: Failed to parse unknown output - {out}'
+
+def render_output(out):
+    def _fmt(text):
+        res = ansi2html(str(text))
+        return f"<pre><code>{res}</code></pre>"
+    ptyp,d = _preferred_msg_out(out, html1st=True, include_imgs=True)
+    d = _join(d)
+    if   ptyp=='text/plain': return _fmt(d)
+    elif ptyp=='text/html': return d
+    elif ptyp=='application/javascript': return f'<script>{d}</script>'
+    elif ptyp=='text/markdown': return d
+    elif ptyp=='text/latex': return f'<div>{d}</div>'
+    elif ptyp=='image/jpeg': return f'<img src="data:image/jpeg;base64,{d}"/>'
+    elif ptyp=='image/png':  return f'<img src="data:image/png;base64,{d}"/>'
+    elif ptyp=='image/svg+xml': return d
+    return ''
+
+def render_outputs(outputs):
+    if (not isinstance(outputs, (list,tuple))) or (outputs and not isinstance(outputs[0],dict)):
+        return ''
+    outputs = concat_streams(outputs)
+    return '\n'.join(render_output(o) for o in outputs)
 
 class Post:
     def __init__(self, path):
