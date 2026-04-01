@@ -1,5 +1,7 @@
-import re, frontmatter, mistletoe as mst
+import json, re, frontmatter, mistletoe as mst
 from collections import Counter
+from fastcore.ansi import ansi2html
+from html import escape
 from datetime import datetime
 from fasthtml.common import *
 from fastlite import *
@@ -47,7 +49,7 @@ def hx_link(txt, href, cls="text-primary underline", target="#main-content", **k
 def navbar():
     menu_id,btn_id = f"menu-{unqid()}",f"btn-{unqid()}"
     brand = A(Img(src="/static/images/pixelated_portrait.png", alt="Jack Hogan", cls="w-6 h-6 rounded-full"), Span("Jack Hogan"), href="/", hx_get="/", cls="flex items-center gap-2 text-lg font-bold", **hx_attrs())
-    def navlinks(_=None): return [hx_link(txt, f"/{txt.lower()}", cls="hover:scale-110", _=_) for txt in ["About", "Blog", "Now"]]
+    def navlinks(_=None): return [hx_link(txt, f"/{txt.lower()}", cls="hover:scale-110", _=_) for txt in ["About", "Blog"]]
     hamburger = Button(UkIcon("menu", width=30, height=30), cls="p-0 border-0 shadow-none", _=f"on click toggle .hidden on #{menu_id}", type="button", id=btn_id)
     return Nav(cls="border rounded-lg shadow backdrop-blur-md bg-background/98")(
             Div(brand, Div(*navlinks(), theme_toggle(), cls="hidden md:flex items-center space-x-4 ml-auto"),
@@ -62,20 +64,118 @@ def layout(*content, htmx, title=None):
     return Title(title), Div(cls="flex flex-col min-h-screen")(
         Div(navbar(), cls=f'{ctr_cls} px-4 sticky top-0 z-50 mt-4'),
         main,
-        Footer(Divider(), ftr_content, cls=f'{ctr_cls} px-6 mt-auto mb-6')
+        Footer(Divider(), subscribe_form(), ftr_content, cls=f'{ctr_cls} px-6 mt-auto mb-6 space-y-6')
     )
+
+def read_nb(path):
+    "Read notebook, return frontmatter Post object (like frontmatter.load for .md files)"
+    cells = json.loads(Path(path).read_text()).get('cells', [])
+    fm_src, md_cells = '', cells
+    if cells and cells[0]['cell_type'] == 'raw':
+        fm_src = ''.join(cells[0]['source'])
+        md_cells = cells[1:]
+    def cell_md(c):
+        src = ''.join(c['source'])
+        if c.get('metadata', {}).get('pinned'): return None
+        if c['cell_type'] == 'code':
+            code = f'```python\n{src}\n```'
+            if outs := render_outputs(c.get('outputs', [])):
+                out_div = f'<div class="cell-output">{outs}</div>'
+                return f'<div class="cell">\n\n{code}\n\n{out_div}\n\n</div>'
+            return f'<div class="cell">\n\n{code}\n\n</div>'
+        if c['cell_type'] == 'raw': return f'```\n{src}\n```'
+        if c['cell_type'] == 'markdown':
+            if atts := c.get('attachments', {}):
+                for fname, mimes in atts.items():
+                    mime, data = next(iter(mimes.items()))
+                    src = src.replace(f'attachment:{fname}', f'data:{mime};base64,{data}')
+            if c.get('metadata', {}).get('solveit_ai'):
+                sep = re.split(r'##### 🤖Reply🤖<!--.*?-->\n*', src, maxsplit=1)
+                prompt = sep[0].strip()
+                if len(sep) > 1 and sep[1].strip():
+                    response = sep[1].strip()
+                    return f'<div class="ai-cell"><div class="ai-prompt"><span class="ai-label">PROMPT</span>\n\n{prompt}\n\n</div><div class="ai-response"><span class="ai-label">AI</span>\n\n{response}\n\n</div></div>'
+                return f'<div class="ai-cell"><div class="ai-prompt"><span class="ai-label">PROMPT</span>\n\n{prompt}\n\n</div></div>'
+            return src
+    md = '\n\n'.join(cell_md(c) for c in md_cells if cell_md(c) is not None)
+    return frontmatter.loads(f"{fm_src}\n\n{md}")
+
+def preferred_out(data, html1st=True, include_imgs=False):
+    preftyps = ('application/javascript', 'text/latex')
+    preftyps = (('text/html', 'text/markdown') if html1st else ('text/markdown', 'text/html')) + preftyps
+    if include_imgs: preftyps += 'image/jpeg','image/png','image/svg+xml'
+    preftyps += ('text/plain',)
+    for mt in preftyps:
+        if (text := data.get(mt)): return mt,text
+    return 'text/plain',''
+
+def _apply_controls(text):
+    r"Apply \r and \b to text, returning processed result"
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if 0<(rpos := line.rfind('\r'))<len(line)-1: lines[i] = line[rpos+1:]
+    text = '\n'.join(lines)
+    while (pos := text.find('\b')) >= 0: text = text[:max(0, pos-1)] + text[pos+1:]
+    return text
+
+def _join(d): return ''.join(d) if isinstance(d, list) else d
+
+def _mk_stream(name, text): return {'output_type': 'stream', 'name': name, 'text': text}
+
+def concat_streams(outputs):
+    "Concatenate stream outputs by name (stdout/stderr), preserving execute_result at end"
+    streams, res, execute_results = {}, [], []
+    for out in outputs:
+        if out['output_type'] == 'stream':
+            name, text = out['name'], _join(out['text'])
+            streams[name] = _apply_controls(streams.get(name, '') + text)
+        elif out['output_type'] in ('error','execute_result'): execute_results.append(out)
+        else: res.append(out)
+    if 'stdout' in streams: res.append(_mk_stream('stdout', streams['stdout']))
+    if 'stderr' in streams: res.append(_mk_stream('stderr', streams['stderr']))
+    res.extend(execute_results)
+    return res
+
+def _preferred_msg_out(out, **kwargs):
+    typ = out['output_type']
+    if typ == 'stream': return 'text/plain', _join(out.get('text', ""))
+    elif typ == 'error': return 'text/plain', '\n'.join(out.get('traceback', []))
+    elif typ in ('execute_result', 'display_data'): return preferred_out(out.get('data', {}), **kwargs)
+    return 'text/plain',f'Error: Failed to parse unknown output - {out}'
+
+def render_output(out):
+    def _fmt(text):
+        res = ansi2html(str(text))
+        return f'<pre class="!border-0 !rounded-none !my-0 !p-0"><code class="nohighlight">{res}</code></pre>'
+    ptyp,d = _preferred_msg_out(out, html1st=True, include_imgs=True)
+    d = _join(d)
+    if   ptyp=='text/plain': return _fmt(d)
+    elif ptyp=='text/html': return d
+    elif ptyp=='application/javascript': return f'<script>{d}</script>'
+    elif ptyp=='text/markdown': return d
+    elif ptyp=='text/latex': return f'<div>{d}</div>'
+    elif ptyp=='image/jpeg': return f'<img src="data:image/jpeg;base64,{d}"/>'
+    elif ptyp=='image/png':  return f'<img src="data:image/png;base64,{d}"/>'
+    elif ptyp=='image/svg+xml': return d
+    return ''
+
+def render_outputs(outputs):
+    if (not isinstance(outputs, (list,tuple))) or (outputs and not isinstance(outputs[0],dict)):
+        return ''
+    outputs = concat_streams(outputs)
+    return '\n'.join(render_output(o) for o in outputs)
 
 class Post:
     def __init__(self, path):
         self.path,self.slug                         = (p := Path(path)),p.stem
-        self.content,self.meta                      = (post := frontmatter.load(path)).content,post.metadata
+        self.content,self.meta                      = (post := (read_nb(path) if p.suffix == '.ipynb' else frontmatter.load(path))).content,post.metadata
         self.title,self.date,self.excerpt,self.tags = self.meta['title'],self.meta['date'],self.meta.get('excerpt',''),L(self.meta.get('tags', []))
         self.datestr                                = self.date.strftime('%d %b %Y')
         self.external_url                           = self.meta.get('external_url')
 
 def get_posts(n=None):
     if not (posts_dir := Path('posts')).exists(): return []
-    posts = posts_dir.ls(file_exts='.md').map(Post).sorted(key=lambda p: p.date, reverse=True)
+    posts = posts_dir.ls(file_exts=['.md', '.ipynb']).map(Post).sorted(key=lambda p: p.date, reverse=True)
     return posts[:n] if n else posts
 
 def tag_pill(tag, selected=None, avail=None, link=False):
@@ -103,14 +203,18 @@ def tag_filter(selected, all_posts, filtered):
     if selected: btns.append(tag_pill(None))
     return Div(Span("Filter:", cls="text-sm font-medium mr-1"), *btns, cls="border-b pb-4 flex flex-wrap items-center gap-2", id="tag-filter")
 
-def post_card(p):
-    date_and_tags = Div(Span(p.datestr, cls="text-sm text-muted-foreground"),
-                        Div(*p.tags.map(partial(tag_pill, link='htmx')), cls="flex gap-2 flex-wrap"),
-                        cls="flex justify-between items-center")
-    content = Div(H3(hx_link(p.title, blogpost.to(slug=p.slug), cls="")), P(p.excerpt, cls="text-muted-foreground leading-relaxed"), date_and_tags,
-                  cls='space-y-2 border-b -mb-4 pb-4 group-hover:border-transparent transition-all')
-    return Li(content, hx_get=blogpost.to(slug=p.slug), hx_trigger="click[!event.target.closest('a') && !getSelection().toString()]",
-              cls="group p-4 -mx-4 hover:rounded-lg hover:shadow-md transition-all cursor-pointer", **hx_attrs())
+def post_intro(content):
+    m = re.search(r'^##\s', content, re.MULTILINE)
+    return content[:m.start()].rstrip() if m else content
+
+def post_preview(p):
+    content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
+    intro, url = post_intro(content), blogpost.to(slug=p.slug)
+    return Div(
+        Div(Span(cls="flex-1 border-t border-muted"), Span(p.datestr, cls="text-sm text-muted-foreground px-4"), Span(cls="flex-1 border-t border-muted"), cls="flex items-center my-8"),
+        H2(hx_link(p.title, url, cls="font-bold")), from_md(intro, img_dir='/post-files'),
+        Div(hx_link("↪ Keep reading", url, cls="text-sm text-primary hover:underline") if intro != content else Span(),
+            Div(*p.tags.map(partial(tag_pill, link='htmx')), cls="flex gap-2 flex-wrap"), cls="flex justify-between items-center mt-4"))
 
 def subscribe_form():
     return Div(
@@ -118,43 +222,7 @@ def subscribe_form():
         Form(Input(type="email", name="email", placeholder="your@email.com", required=True, cls="flex-1 rounded-l-md"), Button("Subscribe", cls=(ButtonT.primary, "rounded-l-none rounded-r-md")), cls="flex", hx_post="/subscribe", hx_swap="outerHTML"),
         cls="mt-6")
 
-def blog_section():
-    if not (posts := get_posts(3)): return Div()
-    def item(p): return Div(hx_link(p.title, blogpost.to(slug=p.slug), cls="hover:underline font-medium"), Span(p.datestr, cls="text-muted-foreground text-sm whitespace-nowrap"), cls="flex justify-between items-baseline gap-4 py-2 border-b")
-    return Section(Div(H3("Latest Posts", cls="text-2xl font-semibold"), hx_link("View all →", blog), cls="flex justify-between items-baseline mb-4"), *posts.map(item), subscribe_form(), cls="border rounded-lg shadow bg-muted p-4")
 
-def work_item(role, org, years, logo_light, logo_dark=None):
-    logo_dark = logo_dark or logo_light
-    img_cls = "w-6 h-6 rounded object-contain"
-    imgs = (Img(src=f"/static/images/logos/{logo_light}", alt=org, cls=f"{img_cls} dark:hidden"),
-            Img(src=f"/static/images/logos/{logo_dark}", alt=org, cls=f"{img_cls} hidden dark:block"))
-    return Div(Div(*imgs, Span(org, cls="font-medium"), cls="flex items-center gap-2"),
-               Div(Span(role, cls="text-muted-foreground text-sm"),
-                   Span(cls="flex-1 border-b border-dotted"),
-                   Span(years, cls="text-muted-foreground text-sm whitespace-nowrap"), cls="flex items-baseline gap-2"),
-               cls="flex flex-col gap-1 py-2")
-
-def work_section():
-    roles = [("Founding AI Research Scientist", "Agemo AI", "2024–2025", "codewords_dark.png", "codewords_light.png"),
-             ("Co-founder and CEO", "Shoji", "2020–2022", "shoji_dark.png", "shoji_light.png"),
-             ("PhD Statistical Machine Learning", "Imperial College London", "2017–2023", "imperial.png")]
-    return Section(
-        H3("Work", cls="text-2xl font-semibold mb-4"),
-        *[work_item(*r) for r in roles],
-        P("Check out my ", hx_link("About", about), " page or my ", A("CV", href="/static/CV_Jack_Hogan.pdf", cls="text-primary underline", target="_blank"), " for more details.", cls="text-sm text-muted-foreground mt-4")
-    )
-
-def intro():
-    return Article(
-        H3("Welcome", cls="text-2xl font-semibold mb-4"),
-        Div(cls="text-base text-muted-foreground leading-relaxed space-y-4")(
-            P("I'm an AI research scientist based in London, UK."),
-            P("This website is both an excuse to teach myself web development and part of an effort to write more, as a way of solidifying and sharing my thoughts about the topics that interest me. It will most likely cover machine learning, software engineering, startups and entrepreneurship; we'll see what else."),
-            P("To learn more about me, check out my ", hx_link("About", about), " page. ",
-            "See my latest blog posts below or find the full list on my ", hx_link("Blog", blog), " page. ",
-            "Or to find out what I'm up to currently, check out my ", hx_link("Now", now), " page."),
-        )
-    )
 
 def span_token(name, pat, attr, prec=5):
     class T(mst.span_token.SpanToken):
@@ -226,15 +294,48 @@ sidenote_css = Style("""
 }
 """)
 
+cell_css = Style("""
+.cell pre { margin-bottom: 0 !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+.cell-output { border: 1px solid rgb(209 213 219); border-top: 0; border-bottom-left-radius: 0.375rem; border-bottom-right-radius: 0.375rem; overflow: hidden; }
+.cell-output pre, .cell-output pre code { border: 0 !important; margin: 0 !important; border-radius: 0 !important; background: #f0f0f0 !important; }
+.dark .cell-output pre, .dark .cell-output pre code { background: #1e2128 !important; }
+.ansi-red-fg { color: #e75c58; } .ansi-green-fg { color: #00a250; } .ansi-yellow-fg { color: #ddb62b; }
+.ansi-blue-fg { color: #208ffb; } .ansi-magenta-fg { color: #d160c4; } .ansi-cyan-fg { color: #60c6c8; }
+.ansi-white-fg { color: #c5c1b4; } .ansi-bold { font-weight: bold; }
+.ai-cell { border: 1px solid rgb(209 213 219); border-radius: 0.375rem; overflow: hidden; margin: 1.5rem 0; }
+.ai-prompt { padding: 0.75rem 1rem; }
+.ai-prompt > p:last-child, .ai-response > p:last-child { margin-bottom: 0 !important; }
+.ai-response { padding: 0.75rem 1rem; background: #f0f0f0; border-top: 1px solid rgb(209 213 219); }
+.dark .ai-response { background: #1e2128; }
+.ai-prompt .ai-label, .ai-response .ai-label { float: right; font-size: 0.6rem; font-weight: 600; color: rgb(156 163 175); letter-spacing: 0.05em; margin-left: 0.5rem; }
+""")
+
 def from_md(content, img_dir='/static/images'):
     content, footnotes = extract_footnotes(content)
     mods = {'pre': 'border border-gray-300 rounded-md my-4', 'p': 'text-base leading-relaxed mb-6', 'li': 'text-base leading-relaxed',
             'ul': 'uk-list uk-list-bullet space-y-2 mb-6 ml-6 text-base', 'ol': 'uk-list uk-list-decimal space-y-2 mb-6 ml-6 text-base', 'hr': 'border-t border-border my-8'}
     rendered = render_md(content, class_map_mods=mods, img_dir=img_dir, renderer=partial(ContentRenderer, FootnoteRef, YoutubeEmbed, footnotes=footnotes))
-    return Div(sidenote_css, rendered, cls="w-full")
+    return Div(sidenote_css, cell_css, rendered, cls="w-full")
+
+_img_exts = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'}
+
+@rt('/post-files/{path:path}')
+def post_files(path: str):
+    p = Path('posts') / path
+    if not p.suffix.lower() in _img_exts or not p.resolve().is_relative_to(Path('posts').resolve()) or not p.exists():
+        return Response("Not found", status_code=404)
+    return FileResponse(p)
+
+def post_article(p, slug):
+    content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
+    tags = Div(*p.tags.map(partial(tag_pill, link=True)), cls="flex gap-2 flex-wrap") if p.tags else None
+    return Article(H1(p.title, cls="text-3xl font-bold mb-3"),
+                   Div(Span(p.date.strftime("%B %d, %Y"), cls="text-muted-foreground text-sm"), tags, cls="flex justify-between items-center mb-8 flex-wrap gap-4"),
+                   from_md(content, img_dir='/post-files'), cls="mb-8")
+
 
 @rt
-def index(htmx): return layout(intro(), blog_section(), work_section(), title="Jack Hogan - Home", htmx=htmx)
+def index(): return RedirectResponse('/blog', status_code=307)
 
 @rt
 def about(htmx):
@@ -244,39 +345,25 @@ def about(htmx):
     return layout(H2("About"), Div(img, from_md(body_md)), title="Jack Hogan - About", htmx=htmx)
 
 @rt
-def now(htmx):
-    post = frontmatter.load('content/now.md')
-    updated = post.metadata.get('updated')
-    updated_str = updated.strftime('%B %d, %Y') if updated else None
-    content = re.sub(r'^#\s+.+\n', '', post.content, count=1)
-    header = Div(H2("Now"), Span(f"Last updated: {updated_str}", cls="text-sm text-muted-foreground") if updated_str else None, cls="flex justify-between items-baseline")
-    return layout(header, from_md(content), title="Jack Hogan - Now", htmx=htmx)
-
-@rt
 def blog(htmx, tags:str=None):
     selected = {unquote(t.strip()) for t in (tags or '').split(',') if t.strip()}
     all_posts = get_posts()
     filtered = all_posts.filter(lambda p: selected <= set(p.tags))
-    posts_content = Ul(*filtered.map(post_card), cls="list-none") if filtered else Div(P("No posts found matching those tags.", cls="text-muted-foreground"), cls="py-8 text-center")
+    posts_content = Div(*filtered.map(post_preview)) if filtered else Div(P("No posts found matching those tags.", cls="text-muted-foreground"), cls="py-8 text-center")
     posts_div = Div(posts_content, id="posts-list")
     tag_filt = tag_filter(selected, all_posts, filtered)
     if htmx and htmx.target == "posts-list":
         tag_filt.attrs['hx-swap-oob'] = 'true'
         return posts_div, tag_filt
-    return layout(H2("Blog"), tag_filt, posts_div, subscribe_form(), title="Jack Hogan - Blog", htmx=htmx)
+    return layout(H2("Blog"), tag_filt, posts_div, title="Jack Hogan - Blog", htmx=htmx)
 
 @rt('/blog/{slug}')
 def blogpost(htmx, slug:str):
-    post_path = Path('posts') / f'{slug}.md'
-    if not post_path.exists(): return layout(H1("Post Not Found", cls="text-4xl font-bold mb-4"), P("Sorry, this blog post doesn't exist."), title="Post Not Found", htmx=htmx)
+    post_path = first(p for p in [Path(f'posts/{slug}.md'), Path(f'posts/{slug}.ipynb')] if p.exists())
+    if not post_path: return layout(H1("Post Not Found", cls="text-4xl font-bold mb-4"), P("Sorry, this blog post doesn't exist."), title="Post Not Found", htmx=htmx)
     p = Post(post_path)
     if p.external_url: return Response(headers={"HX-Redirect": p.external_url})
-    content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
-    tags = Div(*p.tags.map(partial(tag_pill, link=True)), cls="flex gap-2 flex-wrap") if p.tags else None
-    return layout(Article(H1(p.title, cls="text-3xl font-bold mb-3"),
-                          Div(Span(p.date.strftime("%B %d, %Y"), cls="text-muted-foreground text-sm"), tags, cls="flex justify-between items-center mb-8 flex-wrap gap-4"),
-                          from_md(content, img_dir=f'/static/images/posts/{slug}'), cls="mb-8"),
-                  title=f"Jack Hogan - {p.title}", htmx=htmx)
+    return layout(post_article(p, slug), title=f"Jack Hogan - {p.title}", htmx=htmx)
 
 @rt
 def subscribe(email:str):
@@ -295,4 +382,4 @@ def rss_feed():
 @rt
 def contact(): return RedirectResponse(f'mailto:{os.environ.get('EMAIL')}', status_code=302)
 
-serve()
+serve(port=9000)
