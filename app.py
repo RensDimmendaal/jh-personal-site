@@ -167,8 +167,7 @@ def render_outputs(outputs):
 
 class Post:
     def __init__(self, path):
-        self.path,self.slug                         = (p := Path(path)),(p.parent.name if p.stem == 'index' else p.stem)
-        self.interactive                             = (p.parent/'index.py').exists() if p.stem == 'index' else False
+        self.path,self.slug                         = (p := Path(path)),p.stem
         self.content,self.meta                      = (post := (read_nb(path) if p.suffix == '.ipynb' else frontmatter.load(path))).content,post.metadata
         self.title,self.date,self.excerpt,self.tags = self.meta['title'],self.meta['date'],self.meta.get('excerpt',''),L(self.meta.get('tags', []))
         self.datestr                                = self.date.strftime('%d %b %Y')
@@ -176,11 +175,7 @@ class Post:
 
 def get_posts(n=None):
     if not (posts_dir := Path('posts')).exists(): return []
-    files = posts_dir.ls(file_exts=['.md', '.ipynb'])
-    # Also discover subdirectory posts: posts/<slug>/index.ipynb
-    for d in posts_dir.iterdir():
-        if d.is_dir() and (idx := d/'index.ipynb').exists(): files.append(idx)
-    posts = files.map(Post).sorted(key=lambda p: p.date, reverse=True)
+    posts = posts_dir.ls(file_exts=['.md', '.ipynb']).map(Post).sorted(key=lambda p: p.date, reverse=True)
     return posts[:n] if n else posts
 
 def tag_pill(tag, selected=None, avail=None, link=False):
@@ -338,22 +333,6 @@ def post_article(p, slug):
                    Div(Span(p.date.strftime("%B %d, %Y"), cls="text-muted-foreground text-sm"), tags, cls="flex justify-between items-center mb-8 flex-wrap gap-4"),
                    from_md(content, img_dir='/post-files'), cls="mb-8")
 
-# Register interactive sub-app routes from posts/<slug>/index.py
-import importlib.util, sys
-for _d in sorted(Path('posts').iterdir()) if Path('posts').exists() else []:
-    if not (_d.is_dir() and (_d/'index.py').exists()): continue
-    _slug = _d.name
-    _spec = importlib.util.spec_from_file_location(f'posts.{_slug}.index', _d/'index.py')
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules[_spec.name] = _mod
-    _spec.loader.exec_module(_mod)
-    if not hasattr(_mod, 'app'): continue
-    _post = Post(_d/'index.ipynb')
-    def _mk(p, s): return lambda htmx: layout(post_article(p, s), title=f"Jack Hogan - {p.title}", htmx=htmx)
-    for _r in _mod.app.routes:
-        if 'static' in _r.path: continue
-        if _r.path == '/': app.route(f'/blog/{_slug}/')(_mk(_post, _slug))
-        else:              app.route(f'/blog/{_slug}{_r.path}', methods=_r.methods)(_r.endpoint)
 
 @rt
 def index(): return RedirectResponse('/blog', status_code=307)
@@ -380,10 +359,9 @@ def blog(htmx, tags:str=None):
 
 @rt('/blog/{slug}')
 def blogpost(htmx, slug:str):
-    post_path = first(p for p in [Path(f'posts/{slug}.md'), Path(f'posts/{slug}.ipynb'), Path(f'posts/{slug}/index.ipynb')] if p.exists())
+    post_path = first(p for p in [Path(f'posts/{slug}.md'), Path(f'posts/{slug}.ipynb')] if p.exists())
     if not post_path: return layout(H1("Post Not Found", cls="text-4xl font-bold mb-4"), P("Sorry, this blog post doesn't exist."), title="Post Not Found", htmx=htmx)
     p = Post(post_path)
-    if p.interactive: return RedirectResponse(f'/blog/{slug}/', status_code=307)
     if p.external_url: return Response(headers={"HX-Redirect": p.external_url})
     return layout(post_article(p, slug), title=f"Jack Hogan - {p.title}", htmx=htmx)
 
