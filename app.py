@@ -208,14 +208,18 @@ def tag_filter(selected, all_posts, filtered):
     if selected: btns.append(tag_pill(None))
     return Div(Span("Filter:", cls="text-sm font-medium mr-1"), *btns, cls="border-b pb-4 flex flex-wrap items-center gap-2", id="tag-filter")
 
-def post_card(p):
-    date_and_tags = Div(Span(p.datestr, cls="text-sm text-muted-foreground"),
-                        Div(*p.tags.map(partial(tag_pill, link='htmx')), cls="flex gap-2 flex-wrap"),
-                        cls="flex justify-between items-center")
-    content = Div(H3(hx_link(p.title, blogpost.to(slug=p.slug), cls="")), P(p.excerpt, cls="text-muted-foreground leading-relaxed"), date_and_tags,
-                  cls='space-y-2 border-b -mb-4 pb-4 group-hover:border-transparent transition-all')
-    return Li(content, hx_get=blogpost.to(slug=p.slug), hx_trigger="click[!event.target.closest('a') && !getSelection().toString()]",
-              cls="group p-4 -mx-4 hover:rounded-lg hover:shadow-md transition-all cursor-pointer", **hx_attrs())
+def post_intro(content):
+    m = re.search(r'^##\s', content, re.MULTILINE)
+    return content[:m.start()].rstrip() if m else content
+
+def post_preview(p):
+    content = re.sub(r'^#\s+.+\n', '', p.content, count=1)
+    intro, url = post_intro(content), blogpost.to(slug=p.slug)
+    return Div(
+        Div(Span(cls="flex-1 border-t border-muted"), Span(p.datestr, cls="text-sm text-muted-foreground px-4"), Span(cls="flex-1 border-t border-muted"), cls="flex items-center my-8"),
+        H2(hx_link(p.title, url, cls="font-bold")), from_md(intro, img_dir='/post-files'),
+        Div(hx_link("↪ Keep reading", url, cls="text-sm text-primary hover:underline") if intro != content else Span(),
+            Div(*p.tags.map(partial(tag_pill, link='htmx')), cls="flex gap-2 flex-wrap"), cls="flex justify-between items-center mt-4"))
 
 def subscribe_form():
     return Div(
@@ -366,7 +370,7 @@ def blog(htmx, tags:str=None):
     selected = {unquote(t.strip()) for t in (tags or '').split(',') if t.strip()}
     all_posts = get_posts()
     filtered = all_posts.filter(lambda p: selected <= set(p.tags))
-    posts_content = Ul(*filtered.map(post_card), cls="list-none") if filtered else Div(P("No posts found matching those tags.", cls="text-muted-foreground"), cls="py-8 text-center")
+    posts_content = Div(*filtered.map(post_preview)) if filtered else Div(P("No posts found matching those tags.", cls="text-muted-foreground"), cls="py-8 text-center")
     posts_div = Div(posts_content, id="posts-list")
     tag_filt = tag_filter(selected, all_posts, filtered)
     if htmx and htmx.target == "posts-list":
